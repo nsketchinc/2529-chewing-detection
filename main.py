@@ -16,6 +16,7 @@ from util.mediapipe_runner import MediapipeRunner
 from util.landmark_metrics import LandmarkMetrics
 from util.chewing_detector import ChewingDetector
 from util.face_direction import FaceDirectionCalculator
+from util.ml_predictor import MLPredictor, MetricLandmarkConverter, load_predictor
 from util.color import Colors
 
 
@@ -26,14 +27,16 @@ class ChewingDetectionApp:
         self,
         camera_index: int | None = None,
         use_ml_prediction: bool = False,
-        model_path: str | None = None,
+        model_dir: str | None = None,
+        model_names: list[str] | None = None,
     ) -> None:
         """Initialize chewing detection application.
         
         Args:
             camera_index: Camera device index (None = use saved config)
             use_ml_prediction: Whether to use ML model for prediction
-            model_path: Path to trained ML model file
+            model_dir: Directory containing trained ML model files
+            model_names: List of model filenames to load
         """
         # Camera setup
         self.camera_index = camera_index if camera_index is not None else load_camera_index()
@@ -64,10 +67,29 @@ class ChewingDetectionApp:
         # ML prediction (optional)
         self.use_ml_prediction = use_ml_prediction
         self.ml_predictor = None
-        if use_ml_prediction and model_path:
-            # TODO: Implement ML predictor loading
-            print(f"Warning: ML prediction requested but not yet implemented")
-            self.use_ml_prediction = False
+        self.metric_converter = None
+        
+        if use_ml_prediction:
+            if not model_dir or not model_names:
+                print("Warning: ML prediction enabled but no models specified")
+                self.use_ml_prediction = False
+            else:
+                try:
+                    self.ml_predictor = load_predictor(
+                        model_dir=model_dir,
+                        model_names=model_names,
+                        sequence_length=6,
+                        num_lag=5,
+                    )
+                    self.metric_converter = MetricLandmarkConverter(
+                        frame_width=self.frame_width,
+                        frame_height=self.frame_height,
+                        focal_length_y=1750.0,
+                    )
+                    print(f"ML prediction enabled with {len(model_names)} models")
+                except Exception as e:
+                    print(f"Failed to load ML models: {e}")
+                    self.use_ml_prediction = False
         
         # Statistics
         self.frame_count = 0
@@ -114,8 +136,20 @@ class ChewingDetectionApp:
                 # ML prediction (if enabled)
                 prediction_scores = None
                 if self.use_ml_prediction and self.ml_predictor is not None:
-                    # TODO: Implement prediction
-                    pass
+                    # Convert to metric landmarks
+                    metric_landmarks = self.metric_converter.convert(normalized_landmarks)
+                    
+                    # Append data to predictor buffer
+                    current_time = time.time()
+                    self.ml_predictor.append_data(
+                        metric_landmarks=metric_landmarks,
+                        timestamp=current_time,
+                        face_direction_x=face_direction_x,
+                        face_direction_y=face_direction_y,
+                    )
+                    
+                    # Get prediction
+                    prediction_scores = self.ml_predictor.predict()
                 
                 # Detect chewing
                 chewing_flag, mouth_gap, face_state = self.chewing_detector.detect_chewing(
@@ -134,6 +168,8 @@ class ChewingDetectionApp:
                     face_state,
                     face_direction_x,
                     face_direction_y,
+                    prediction_scores,
+                    len(self.ml_predictor.data_buffer) if (self.use_ml_prediction and self.ml_predictor is not None) else 0,
                 )
                 
                 # Display
@@ -167,6 +203,8 @@ class ChewingDetectionApp:
         face_state: int,
         face_direction_x: float,
         face_direction_y: float,
+        prediction_scores: np.ndarray | None,
+        buffer_len: int,
     ) -> None:
         """Draw visualization on the image."""
         # Draw all landmarks (white dots)
@@ -257,14 +295,39 @@ class ChewingDetectionApp:
             image, f"Mouth gap: {mouth_gap:.1f}px", (10, 190),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, Colors.WHITE, 2
         )
+        
+        # ML prediction status/scores
+        if self.use_ml_prediction:
+            if prediction_scores is None:
+                cv2.putText(
+                    image, f"ML: buffering {buffer_len}/6", (10, 230),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, Colors.YELLOW, 2
+                )
+            else:
+                cv2.putText(
+                    image, f"ML: [{prediction_scores[0]:.2f}, {prediction_scores[1]:.2f}, {prediction_scores[2]:.2f}]", (10, 230),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, Colors.CYAN, 2
+                )
+        else:
+            cv2.putText(
+                image, "ML: disabled", (10, 230),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, Colors.WHITE, 2
+            )
 
 
 def main():
     """Entry point for chewing detection application."""
     try:
+        # Configuration
+        use_ml = True # Set to True to enable ML prediction
+        model_dir = "data/model/009"  # Directory containing model pickle files
+        model_names = ["lgb_1.model", "lgb_2.model"]  # List your model files
+        
         app = ChewingDetectionApp(
             camera_index=None,  # Use saved camera index
-            use_ml_prediction=False,  # Disable ML for now
+            use_ml_prediction=use_ml,
+            model_dir=model_dir if use_ml else None,
+            model_names=model_names if use_ml else None,
         )
         app.run()
     except KeyboardInterrupt:
