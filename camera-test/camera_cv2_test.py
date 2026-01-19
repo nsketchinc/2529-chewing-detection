@@ -1,9 +1,14 @@
 import platform
+import sys
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+# utilモジュールをインポート可能にする
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from util.camera_config import save_camera_index
 
 
 def open_camera(index: int) -> cv2.VideoCapture:
@@ -61,6 +66,7 @@ def main() -> None:
         try:
             cap = open_camera(idx)
             camera_index = idx
+            save_camera_index(camera_index)
             print(f"Successfully opened camera index {camera_index}")
             break
         except RuntimeError as exc:
@@ -95,6 +101,7 @@ def main() -> None:
                 try:
                     cap = open_camera(new_index)
                     camera_index = new_index
+                    save_camera_index(camera_index)
                     print(f"Successfully opened camera index {camera_index}")
                     break
                 except RuntimeError as exc:
@@ -130,6 +137,7 @@ def main() -> None:
             try:
                 cap = open_camera(new_index)
                 camera_index = new_index
+                save_camera_index(camera_index)
                 print(f"Switched to camera index {camera_index}")
             except RuntimeError as exc:
                 print(f"Camera {new_index}: {exc}")
@@ -143,6 +151,7 @@ def main() -> None:
                 try:
                     cap = open_camera(new_index)
                     camera_index = new_index
+                    save_camera_index(camera_index)
                     print(f"Switched to camera index {camera_index}")
                 except RuntimeError as exc:
                     print(f"Camera {new_index}: {exc}")
@@ -156,6 +165,7 @@ def main() -> None:
                 try:
                     cap = open_camera(new_index)
                     camera_index = new_index
+                    save_camera_index(camera_index)
                     print(f"Switched to camera index {camera_index}")
                 except RuntimeError as exc:
                     print(f"Camera {new_index}: {exc}")
