@@ -20,7 +20,7 @@ class MediapipeRunner:
 
     def __init__(
         self,
-        model_path: str = "face_landmarker.task",
+        model_path: str = "data/face_landmarker.task",
         max_faces: int = 1,
         min_detection_confidence: float = 0.5,
         min_presence_confidence: float = 0.5,

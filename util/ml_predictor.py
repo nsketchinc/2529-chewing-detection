@@ -187,7 +187,7 @@ class MetricLandmarkConverter:
 
         # Try to load the actual face_geometry implementation
         try:
-            from face_geometry import PCF, get_metric_landmarks  # type: ignore
+            from util.face_geometry import PCF, get_metric_landmarks  # type: ignore
 
             self._pcf = PCF(
                 near=self.near,
