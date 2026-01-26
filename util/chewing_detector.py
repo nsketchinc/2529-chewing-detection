@@ -189,7 +189,6 @@ class ChewingDetector:
                   np.all(self.onwards_flag_array[-1:]) and 
                   onwards_tojihantei):
                 flag = 2
-                self.munching_count += 1
                 self.number_of_frames_since_last_onwards = 0
             else:
                 self.number_of_frames_since_last_onwards += 1
