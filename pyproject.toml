@@ -10,4 +10,6 @@ dependencies = [
     "mediapipe>=0.10.31",
     "opencv-python>=4.13.0.90",
     "ruff>=0.14.13",
+    "srt>=3.5.3",
+    "tqdm>=4.67.2",
 ]
