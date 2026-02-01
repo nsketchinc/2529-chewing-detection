@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Development
+.git/
+.gitignore
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+README.md
+DEPLOY.md
+*.md
+
+# Test files
+test/
+video_data/
+
+# Raw data and temporary files
+data/raw_data/
+*.mp4
+*.avi
+*.mov
+*.srt
+
+# Models not needed (keep only tmp_model/exp001)
+data/model/
+
+# Training scripts (not needed in production)
+training.py
+video_to_train_data.py
+training_config.yaml
+inspect_model.py
+main.py
+mediapipe_app.py
+camera_config.txt
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
