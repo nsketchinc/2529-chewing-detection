@@ -31,7 +31,7 @@ socketio = SocketIO(
     cors_allowed_origins="*",
     ping_timeout=60,
     ping_interval=25,
-    async_mode="threading",
+    async_mode="eventlet",
 )
 
 # Global state
@@ -51,6 +51,8 @@ metric_converter = None
 
 if USE_ML_PREDICTION:
     try:
+        import os
+        
         # Frame dimensions (default to 1920x1080, matching frontend ideal constraints)
         FRAME_WIDTH = 1920
         FRAME_HEIGHT = 1080
@@ -65,6 +67,15 @@ if USE_ML_PREDICTION:
             "lgb_3.model",
             "lgb_4.model",
         ]
+        
+        # Debug: Check if model files exist
+        logger.info(f"Checking model directory: {MODEL_DIR}")
+        if os.path.exists(MODEL_DIR):
+            files = os.listdir(MODEL_DIR)
+            logger.info(f"Files in {MODEL_DIR}: {files}")
+        else:
+            logger.error(f"Model directory does not exist: {MODEL_DIR}")
+            raise FileNotFoundError(f"Model directory not found: {MODEL_DIR}")
         
         ml_predictor = load_predictor(
             model_dir=MODEL_DIR,
@@ -248,6 +259,10 @@ def handle_get_state():
 
 if __name__ == "__main__":
     # Run server
+    import eventlet
+    eventlet.monkey_patch()
+    
     logger.info("Starting ChewingDetection WebSocket Server on 0.0.0.0:5000")
     logger.info(f"ML Prediction: {'ENABLED' if USE_ML_PREDICTION else 'DISABLED'}")
+    logger.info("Using eventlet async mode")
     socketio.run(app, host="0.0.0.0", port=5000, debug=False)
