@@ -5,12 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "flask>=3.0.0",
+    "flask-socketio>=5.3.0",
     "lightgbm>=4.6.0",
     "matplotlib>=3.10.8",
     "mediapipe>=0.10.31",
     "opencv-python>=4.13.0.90",
     "pandas>=3.0.0",
     "pyyaml>=6.0.3",
+    "python-socketio>=5.10.0",
     "ruff>=0.14.13",
     "scikit-learn>=1.8.0",
     "srt>=3.5.3",
