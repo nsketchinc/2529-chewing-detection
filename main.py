@@ -73,8 +73,8 @@ class ChewingDetectionApp:
         self.metrics = LandmarkMetrics()
         self.chewing_detector = ChewingDetector(
             sequence_length=30,
-            firstbite_threshold=-0.5,
-            onwards_threshold=-0.3,
+            firstbite_threshold=0.1,
+            mouth_gap_threshold=15.0,
         )
         self.face_direction_calc = FaceDirectionCalculator(
             frame_width=self.frame_width,
@@ -326,14 +326,14 @@ class ChewingDetectionApp:
         )
 
         # Chewing status
-        status_text = "Idle"
+        status_text = ""
         status_color = Colors.WHITE
-        if chewing_flag == 1:
-            status_text = "FIRST BITE!"
-            status_color = (0, 255, 255)  # Yellow
-        elif chewing_flag in [2, 3]:
-            status_text = "CHEWING"
-            status_color = Colors.GREEN
+        # if chewing_flag == 1:
+        #     status_text = "FIRST BITE!"
+        #     status_color = (0, 255, 255)  # Yellow
+        # elif chewing_flag in [2, 3]:
+        #     status_text = "CHEWING"
+        #     status_color = Colors.GREEN
 
         # Chew counter
         cv2.putText(
