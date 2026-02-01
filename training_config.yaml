@@ -1,20 +1,17 @@
-# Training configuration for chewing detection
-# Adjust use_pickle_list to your actual training pickle filenames (placed under data/raw_data/).
+# Training configuration for chewing detection (bite start / chewing / other)
+# Place pickles under data/raw_data/ and list filenames below.
 
 exp_name: exp001
 
 base_model:
-  do_train: true
-  do_evaluate: false
   # Training data pickles (filenames only, under data/raw_data/)
-  use_pickle_list: ["session01.pkl"]
+  use_pickle_list: ["1_for_test.pickle"]
   use_pickle_list_add: []
   # Time-series settings
   lag_num: 5           # matches inference (sequence_length=6, num_lag=5)
   target_name: target  # column name used in training.py
   drop_last_munching: false
   drop_last_munching_num: 1
-  use_last_kaiwa_mode: false
   # Class weights mode for train/valid
   weight:
     tr_weight: ones    # options: ones | equal | sqrt | cbrt
@@ -35,22 +32,6 @@ base_model:
     min_data_in_leaf: 20
     seed: 42
 
-# Optional second-stage (oof) training
-# Set do_train/do_evaluate to true if you want to train with OOF features.
 oof_model:
+  # Not used in this project (kept for future extension)
   do_train: false
-  do_evaluate: false
-  lgb_params:
-    num_class: 3
-    objective: multiclass
-    metric: multi_logloss
-    learning_rate: 0.05
-    num_leaves: 64
-    max_depth: -1
-    feature_fraction: 0.9
-    bagging_fraction: 0.8
-    bagging_freq: 1
-    lambda_l1: 0.0
-    lambda_l2: 0.0
-    min_data_in_leaf: 20
-    seed: 43

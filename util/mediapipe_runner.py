@@ -63,8 +63,7 @@ class MediapipeRunner:
         result = self._landmarker.detect_for_video(mp_image, self._timestamp_ms)
         self._timestamp_ms += self.frame_interval_ms
 
-        # if no result
-        if result.face_landmarks is None:
+        if not result.face_landmarks:
             return DetectionResult(landmarks=None, frame_height=frame_height, frame_width=frame_width)
 
         landmarks = self._landmarks_to_array(result.face_landmarks[0])

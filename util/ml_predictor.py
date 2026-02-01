@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 
 class MLPredictor:
@@ -76,7 +77,7 @@ class MLPredictor:
         """Predict chewing event from buffered data.
         
         Returns:
-            Prediction array [other_score, first_bite_score, onwards_score]
+            Prediction array [first_bite_score, onwards_score, other_score]
             or None if insufficient data
         """
         if len(self.data_buffer) < self.sequence_length:
@@ -95,9 +96,19 @@ class MLPredictor:
         features = self._create_features(landmarks, timestamps, direction_x, direction_y)
         
         # Predict with all models and average
+        features_last = features[-1:, :]
+        if self.feat_cols is not None:
+            try:
+                features_last = pd.DataFrame(features_last, columns=self.feat_cols)
+            except Exception:
+                pass
+
         predictions = []
         for model in self.models:
-            pred = model.predict(features[-1:, :])[0]
+            if hasattr(model, "predict_proba"):
+                pred = model.predict_proba(features_last)[0]
+            else:
+                pred = model.predict(features_last)[0]
             predictions.append(pred)
         
         avg_prediction = np.mean(predictions, axis=0)
@@ -154,7 +165,7 @@ class MLPredictor:
             # If training module not available, use raw features
             # This is a fallback - the model may not work well without proper preprocessing
             print("Warning: training module not found, using raw features")
-        
+
         return data
 
     def reset(self) -> None:

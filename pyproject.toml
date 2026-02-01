@@ -9,7 +9,10 @@ dependencies = [
     "matplotlib>=3.10.8",
     "mediapipe>=0.10.31",
     "opencv-python>=4.13.0.90",
+    "pandas>=3.0.0",
+    "pyyaml>=6.0.3",
     "ruff>=0.14.13",
+    "scikit-learn>=1.8.0",
     "srt>=3.5.3",
     "tqdm>=4.67.2",
 ]

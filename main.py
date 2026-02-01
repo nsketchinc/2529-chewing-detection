@@ -369,9 +369,12 @@ class ChewingDetectionApp:
                     2,
                 )
             else:
+                label_names = ["FIRST_BITE", "ONWARDS", "OTHER"]
+                best_idx = int(np.argmax(prediction_scores))
+                best_label = label_names[best_idx]
                 cv2.putText(
                     image,
-                    f"ML: [{prediction_scores[0]:.2f}, {prediction_scores[1]:.2f}, {prediction_scores[2]:.2f}]",
+                    f"ML: [{prediction_scores[0]:.2f}, {prediction_scores[1]:.2f}, {prediction_scores[2]:.2f}] {best_label}",
                     (10, 210),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -474,8 +477,14 @@ def main():
     try:
         # Configuration
         use_ml = True  # Set to True to enable ML prediction
-        model_dir = "data/model/009"  # Directory containing model pickle files
-        model_names = ["lgb_1.model", "lgb_2.model"]  # List your model files
+        model_dir = "data/tmp_model/exp001"  # Directory containing model pickle files
+        model_names = [
+            "lgb_0.model",
+            "lgb_1.model",
+            "lgb_2.model",
+            "lgb_3.model",
+            "lgb_4.model",
+        ]  # List your model files
 
         app = ChewingDetectionApp(
             camera_index=None,  # Use saved camera index
