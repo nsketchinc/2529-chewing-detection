@@ -20,6 +20,7 @@ class MLPredictor:
         model_paths: list[str | Path],
         sequence_length: int = 6,
         num_lag: int = 5,
+        model_dir: str | Path | None = None,
     ) -> None:
         """Initialize ML predictor with trained models.
         
@@ -27,6 +28,7 @@ class MLPredictor:
             model_paths: List of paths to pickled model files
             sequence_length: Number of frames to keep for prediction
             num_lag: Number of lag features to generate
+            model_dir: Directory containing feat_cols.pickle (optional)
         """
         self.models = []
         self.sequence_length = sequence_length
@@ -45,6 +47,19 @@ class MLPredictor:
                 self.models.append(model)
         
         print(f"Loaded {len(self.models)} ML models")
+        
+        # Try to load feat_cols.pickle
+        if model_dir is not None:
+            feat_cols_path = Path(model_dir) / "feat_cols.pickle"
+            if feat_cols_path.exists():
+                try:
+                    with open(feat_cols_path, 'rb') as f:
+                        self.feat_cols = pickle.load(f)
+                    print(f"Loaded feature columns from {feat_cols_path}: {len(self.feat_cols)} features")
+                except Exception as e:
+                    print(f"Warning: Failed to load feat_cols.pickle: {e}")
+            else:
+                print(f"Warning: feat_cols.pickle not found at {feat_cols_path}")
 
     def append_data(
         self,
@@ -97,11 +112,10 @@ class MLPredictor:
         
         # Predict with all models and average
         features_last = features[-1:, :]
-        if self.feat_cols is not None:
-            try:
-                features_last = pd.DataFrame(features_last, columns=self.feat_cols)
-            except Exception:
-                pass
+        
+        # If we have feature column names, create a DataFrame
+        if self.feat_cols is not None and len(self.feat_cols) == features_last.shape[1]:
+            features_last = pd.DataFrame(features_last, columns=self.feat_cols)
 
         predictions = []
         for model in self.models:
@@ -160,11 +174,27 @@ class MLPredictor:
         try:
             from training import get_preprocess, get_lag_features
             data, feat_cols = get_preprocess(data)
-            data, self.feat_cols = get_lag_features(data, feat_cols, self.num_lag)
+            data, temp_feat_cols = get_preprocess(data)
+            data, self.feat_cols = get_lag_features(data, temp_feat_cols, self.num_lag)
+            print(f"Using training module preprocessing: {len(self.feat_cols)} features")
         except ImportError:
-            # If training module not available, use raw features
-            # This is a fallback - the model may not work well without proper preprocessing
-            print("Warning: training module not found, using raw features")
+            # If training module not available, apply lag features manually
+            print("Warning: training module not found, applying lag features manually")
+            
+            # Simple lag feature generation (43 base features * (1 + num_lag) lags)
+            features_with_lag = []
+            for i in range(len(data)):
+                frame_features = []
+                for lag in range(self.num_lag + 1):
+                    idx = max(0, i - lag)
+                    frame_features.append(data[idx])
+                features_with_lag.append(np.concatenate(frame_features))
+            
+            data = np.array(features_with_lag)  # (seq_len, 43 * (num_lag + 1))
+            
+            # If feat_cols was loaded from pickle, verify shape matches
+            if self.feat_cols is not None and len(self.feat_cols) != data.shape[1]:
+                print(f"Warning: feat_cols length ({len(self.feat_cols)}) doesn't match features ({data.shape[1]})")
 
         return data
 
