@@ -25,9 +25,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main_websocket.py .
 COPY util/ ./util/
 
-# Copy ML models and data
-COPY data/tmp_model/ ./data/tmp_model/
+# Copy ML models and data (ensure directory structure is preserved)
+COPY data/tmp_model/exp001/ ./data/tmp_model/exp001/
 COPY data/face_landmarker.task ./data/face_landmarker.task
+
+# Debug: Verify model files are copied
+RUN echo "=== Checking model directory ===" && \
+    ls -lah data/tmp_model/exp001/ && \
+    echo "=== feat_cols.pickle exists? ===" && \
+    test -f data/tmp_model/exp001/feat_cols.pickle && echo "YES" || echo "NO"
 
 # Expose port
 EXPOSE 5000
