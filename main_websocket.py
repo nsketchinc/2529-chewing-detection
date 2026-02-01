@@ -18,7 +18,7 @@ from util.ml_predictor import load_predictor, MetricLandmarkConverter
 
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create Flask app
@@ -250,4 +250,4 @@ if __name__ == "__main__":
     # Run server
     logger.info("Starting ChewingDetection WebSocket Server on 0.0.0.0:5000")
     logger.info(f"ML Prediction: {'ENABLED' if USE_ML_PREDICTION else 'DISABLED'}")
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False)
