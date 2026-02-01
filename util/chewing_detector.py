@@ -69,7 +69,7 @@ class ChewingDetector:
         mouth_gap = self._measure_mouth_gap(landmarks_px)
         
         # Evaluate face direction
-        self._evaluate_face_direction(face_direction_x, face_direction_y)
+        # self._evaluate_face_direction(face_direction_x, face_direction_y)
 
         # Determine chewing flag based primarily on ML scores
         flag = 0
