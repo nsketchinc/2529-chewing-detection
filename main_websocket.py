@@ -1,4 +1,4 @@
-"""WebSocket detection server using Flask-SocketIO.
+"""WebSocket detection server using ASGI + python-socketio.
 
 Streams face mesh landmarks and receives chewing detection results.
 """
@@ -10,8 +10,7 @@ import time
 from threading import Lock
 
 import numpy as np
-from flask import Flask
-from flask_socketio import SocketIO, emit
+import socketio
 
 from util.chewing_detector import ChewingDetector
 from util.ml_predictor import load_predictor, MetricLandmarkConverter
@@ -21,28 +20,54 @@ from util.ml_predictor import load_predictor, MetricLandmarkConverter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create Flask app
-app = Flask(__name__)
-app.config["SECRET_KEY"] = "chewing-detection-secret"
-
-# Initialize SocketIO
-socketio = SocketIO(
-    app,
+# Initialize Socket.IO server (ASGI)
+sio = socketio.AsyncServer(
+    async_mode="asgi",
     cors_allowed_origins="*",
     ping_timeout=60,
     ping_interval=25,
-    async_mode="eventlet",
 )
+
+
+async def health_app(scope, receive, send):
+    if scope.get("type") != "http":
+        return
+
+    if scope.get("path") != "/":
+        status = 404
+        body = b"Not Found"
+        headers = [(b"content-type", b"text/plain")]
+    else:
+        status = 200
+        body = json.dumps(
+            {"status": "ok", "message": "ChewingDetection WebSocket Server"}
+        ).encode("utf-8")
+        headers = [(b"content-type", b"application/json")]
+
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+app = socketio.ASGIApp(sio, other_asgi_app=health_app)
 
 # Global state
 chewing_detector = ChewingDetector(
     sequence_length=30,
-    firstbite_threshold=0.15,
+    firstbite_threshold=0.1,
     mouth_gap_threshold=15.0,
     non_continuous_sounds=5,
     face_direction_x_threshold=30.0,
     face_direction_y_threshold=(-20.0, 20.0),
 )
+
+# Frame defaults (used when client does not provide dimensions)
+DEFAULT_FRAME_WIDTH = 1920
+DEFAULT_FRAME_HEIGHT = 1080
+DEFAULT_FOCAL_LENGTH_Y = 1750.0
+
+FRAME_WIDTH = DEFAULT_FRAME_WIDTH
+FRAME_HEIGHT = DEFAULT_FRAME_HEIGHT
+FOCAL_LENGTH_Y = DEFAULT_FOCAL_LENGTH_Y
 
 # ML Prediction setup (matching main.py)
 USE_ML_PREDICTION = True
@@ -52,11 +77,6 @@ metric_converter = None
 if USE_ML_PREDICTION:
     try:
         import os
-        
-        # Frame dimensions (default to 1920x1080, matching frontend ideal constraints)
-        FRAME_WIDTH = 1920
-        FRAME_HEIGHT = 1080
-        FOCAL_LENGTH_Y = 1750.0
         
         # Load ML models
         MODEL_DIR = "data/tmp_model/exp001"
@@ -100,32 +120,38 @@ if USE_ML_PREDICTION:
 detector_lock = Lock()
 
 
-@app.route("/")
-def index():
-    """Health check endpoint."""
-    return {"status": "ok", "message": "ChewingDetection WebSocket Server"}
+def _coerce_frame_size(value: object, fallback: int) -> int:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return size if size > 0 else fallback
 
 
-@socketio.on("connect")
-def handle_connect():
+@sio.event
+async def connect(sid, environ):
     """Handle client connection."""
-    logger.info(f"Client connected: {socketio.server.environ.get('REMOTE_ADDR')}")
-    logger.debug("Handshake headers: %s", socketio.server.environ.get("headers"))
-    emit("response", {
-        "status": "connected", 
-        "message": "Connected to chewing detection server",
-        "ml_enabled": USE_ML_PREDICTION
-    })
+    logger.info("Client connected: %s", environ.get("REMOTE_ADDR"))
+    logger.debug("Handshake headers: %s", environ.get("headers"))
+    await sio.emit(
+        "response",
+        {
+            "status": "connected",
+            "message": "Connected to chewing detection server",
+            "ml_enabled": USE_ML_PREDICTION,
+        },
+        to=sid,
+    )
 
 
-@socketio.on("disconnect")
-def handle_disconnect():
+@sio.event
+async def disconnect(sid):
     """Handle client disconnection."""
-    logger.info(f"Client disconnected: {socketio.server.environ.get('REMOTE_ADDR')}")
+    logger.info("Client disconnected: %s", sid)
 
 
-@socketio.on("landmarks")
-def handle_landmarks(data):
+@sio.on("landmarks")
+async def handle_landmarks(sid, data):
     """Handle incoming face landmarks.
     
     Expected data format:
@@ -133,13 +159,17 @@ def handle_landmarks(data):
         "landmarks": [[x0, x1, ...], [y0, y1, ...], [z0, z1, ...]],  # Normalized (0-1)
         "face_direction_x": float,
         "face_direction_y": float,
+        "frame_width": int,
+        "frame_height": int,
     }
     """
     try:
+        global FRAME_WIDTH, FRAME_HEIGHT, metric_converter
+
         # Parse landmarks
         landmarks_list = data.get("landmarks")
         if not landmarks_list:
-            emit("detection_result", {"error": "No landmarks provided"})
+            await sio.emit("detection_result", {"error": "No landmarks provided"}, to=sid)
             return
         
         # Convert to numpy array - these are NORMALIZED landmarks (0-1 range)
@@ -150,6 +180,18 @@ def handle_landmarks(data):
         face_direction_x = data.get("face_direction_x", 0.0)
         face_direction_y = data.get("face_direction_y", 0.0)
         logger.debug("Face direction: x=%s y=%s", face_direction_x, face_direction_y)
+
+        frame_width = _coerce_frame_size(data.get("frame_width"), FRAME_WIDTH)
+        frame_height = _coerce_frame_size(data.get("frame_height"), FRAME_HEIGHT)
+        if frame_width != FRAME_WIDTH or frame_height != FRAME_HEIGHT:
+            FRAME_WIDTH = frame_width
+            FRAME_HEIGHT = frame_height
+            if USE_ML_PREDICTION and metric_converter is not None:
+                metric_converter = MetricLandmarkConverter(
+                    frame_width=FRAME_WIDTH,
+                    frame_height=FRAME_HEIGHT,
+                    focal_length_y=FOCAL_LENGTH_Y,
+                )
         
         # ML Prediction (if enabled)
         prediction_scores = None
@@ -185,10 +227,10 @@ def handle_landmarks(data):
                 prediction_scores = None
         
         # Convert normalized landmarks to pixel coordinates for chewing detector
-        # (Using default frame dimensions)
+        # (Using client frame dimensions when provided)
         landmarks_px = landmarks_normalized.copy()
-        landmarks_px[0] *= FRAME_WIDTH if USE_ML_PREDICTION else 1920
-        landmarks_px[1] *= FRAME_HEIGHT if USE_ML_PREDICTION else 1080
+        landmarks_px[0] *= FRAME_WIDTH
+        landmarks_px[1] *= FRAME_HEIGHT
         
         # Perform detection
         with detector_lock:
@@ -214,15 +256,15 @@ def handle_landmarks(data):
             "munching_count": int(chewing_detector.munching_count),
             "ml_prediction": prediction_scores.tolist() if prediction_scores is not None else None,
         }
-        emit("detection_result", result)
+        await sio.emit("detection_result", result, to=sid)
         
     except Exception as e:
         logger.error(f"Error processing landmarks: {e}", exc_info=True)
-        emit("detection_result", {"error": str(e)})
+        await sio.emit("detection_result", {"error": str(e)}, to=sid)
 
 
-@socketio.on("reset")
-def handle_reset():
+@sio.on("reset")
+async def handle_reset(sid):
     """Reset detector state."""
     try:
         logger.info("Reset requested by client.")
@@ -230,15 +272,15 @@ def handle_reset():
             chewing_detector.reset()
             if USE_ML_PREDICTION and ml_predictor is not None:
                 ml_predictor.reset()
-        emit("detection_result", {"status": "reset"})
+        await sio.emit("detection_result", {"status": "reset"}, to=sid)
         logger.info("Detector reset (including ML predictor)" if USE_ML_PREDICTION else "Detector reset")
     except Exception as e:
         logger.error(f"Error resetting detector: {e}", exc_info=True)
-        emit("detection_result", {"error": str(e)})
+        await sio.emit("detection_result", {"error": str(e)}, to=sid)
 
 
-@socketio.on("get_state")
-def handle_get_state():
+@sio.on("get_state")
+async def handle_get_state(sid):
     """Get current detector state."""
     try:
         logger.debug("State requested by client.")
@@ -251,18 +293,17 @@ def handle_get_state():
                 "ml_buffer_length": len(ml_predictor.data_buffer) if (USE_ML_PREDICTION and ml_predictor) else 0,
             }
         logger.debug("Current detector state: %s", state)
-        emit("detector_state", state)
+        await sio.emit("detector_state", state, to=sid)
     except Exception as e:
         logger.error(f"Error getting state: {e}", exc_info=True)
-        emit("detector_state", {"error": str(e)})
+        await sio.emit("detector_state", {"error": str(e)}, to=sid)
 
 
 if __name__ == "__main__":
     # Run server
-    import eventlet
-    eventlet.monkey_patch()
-    
+    import uvicorn
+
     logger.info("Starting ChewingDetection WebSocket Server on 0.0.0.0:5000")
     logger.info(f"ML Prediction: {'ENABLED' if USE_ML_PREDICTION else 'DISABLED'}")
-    logger.info("Using eventlet async mode")
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False)
+    logger.info("Using ASGI async mode")
+    uvicorn.run(app, host="0.0.0.0", port=5000, log_level="info")
