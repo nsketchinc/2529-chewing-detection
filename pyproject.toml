@@ -18,4 +18,5 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "srt>=3.5.3",
     "tqdm>=4.67.2",
+    "eventlet>=0.40.4",
 ]
