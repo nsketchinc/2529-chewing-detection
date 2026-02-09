@@ -15,6 +15,38 @@ import pandas as pd
 class MLPredictor:
     """Predict chewing events using trained ML models."""
 
+    @staticmethod
+    def _get_preprocess(data: np.ndarray) -> tuple[np.ndarray, list[str]]:
+        """Preprocess raw features to match training behavior."""
+        num_features = data.shape[1]
+        feat_cols = [f"feat_{i}" for i in range(num_features)]
+        return data, feat_cols
+
+    @staticmethod
+    def _get_lag_features(
+        data: np.ndarray,
+        feat_cols: list[str],
+        num_lag: int,
+    ) -> tuple[np.ndarray, list[str]]:
+        """Generate lag features with the same logic as training."""
+        lag_features = []
+        lag_feat_cols = feat_cols.copy()
+
+        for lag in range(1, num_lag + 1):
+            lagged = np.roll(data, lag, axis=0)
+            lagged[:lag] = 0
+            lag_features.append(lagged)
+
+            for col in feat_cols:
+                lag_feat_cols.append(f"{col}_lag{lag}")
+
+        if lag_features:
+            lag_data = np.concatenate([data] + lag_features, axis=1)
+        else:
+            lag_data = data
+
+        return lag_data, lag_feat_cols
+
     def __init__(
         self,
         model_paths: list[str | Path],
@@ -170,38 +202,24 @@ class MLPredictor:
             axis=1
         )  # (seq_len, 43 features before lag)
         
-        # Apply preprocessing (if training module is available)
-        try:
-            from training import get_preprocess, get_lag_features
-            data, feat_cols = get_preprocess(data)
-            data, temp_feat_cols = get_preprocess(data)
-            data, self.feat_cols = get_lag_features(data, temp_feat_cols, self.num_lag)
-            print(f"Using training module preprocessing: {len(self.feat_cols)} features")
-        except ImportError:
-            # If training module not available, apply lag features manually
-            print("Warning: training module not found, applying lag features manually")
-            
-            # Simple lag feature generation (43 base features * (1 + num_lag) lags)
-            features_with_lag = []
-            for i in range(len(data)):
-                frame_features = []
-                for lag in range(self.num_lag + 1):
-                    idx = max(0, i - lag)
-                    frame_features.append(data[idx])
-                features_with_lag.append(np.concatenate(frame_features))
-            
-            data = np.array(features_with_lag)  # (seq_len, 43 * (num_lag + 1))
-            
-            # If feat_cols was loaded from pickle, verify shape matches
-            if self.feat_cols is not None and len(self.feat_cols) != data.shape[1]:
-                print(f"Warning: feat_cols length ({len(self.feat_cols)}) doesn't match features ({data.shape[1]})")
+        data, base_cols = self._get_preprocess(data)
+        data, computed_cols = self._get_lag_features(data, base_cols, self.num_lag)
+
+        if self.feat_cols is None:
+            self.feat_cols = computed_cols
+        elif len(self.feat_cols) != len(computed_cols):
+            print(
+                "Warning: feat_cols length "
+                f"({len(self.feat_cols)}) doesn't match features "
+                f"({len(computed_cols)})"
+            )
+            self.feat_cols = computed_cols
 
         return data
 
     def reset(self) -> None:
         """Clear the data buffer."""
         self.data_buffer = []
-        self.feat_cols = None
 
 
 class MetricLandmarkConverter:
@@ -283,4 +301,4 @@ def load_predictor(
     """
     model_dir = Path(model_dir)
     model_paths = [model_dir / name for name in model_names]
-    return MLPredictor(model_paths, sequence_length, num_lag)
+    return MLPredictor(model_paths, sequence_length, num_lag, model_dir=model_dir)
