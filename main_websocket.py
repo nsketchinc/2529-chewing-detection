@@ -107,6 +107,7 @@ _frame_sizes: dict[str, tuple[int, int]] = {}
 _last_predict_at: dict[str, float] = {}
 _last_results: dict[str, dict] = {}
 _sid_locks: dict[str, Lock] = {}
+_last_ml_predictions: dict[str, np.ndarray] = {}
 
 
 def _coerce_frame_size(value: object, fallback: int) -> int:
@@ -160,6 +161,7 @@ def _init_client_state(sid: str) -> None:
     _last_predict_at[sid] = 0.0
     _last_results[sid] = {}
     _sid_locks[sid] = Lock()
+    _last_ml_predictions[sid] = None
     if USE_ML_PREDICTION:
         _ml_predictors[sid] = load_predictor(
             model_dir=MODEL_DIR,
@@ -183,6 +185,7 @@ def _clear_client_state(sid: str) -> None:
     _last_predict_at.pop(sid, None)
     _last_results.pop(sid, None)
     _sid_locks.pop(sid, None)
+    _last_ml_predictions.pop(sid, None)
     _last_face_centers.pop(sid, None)
 
 
@@ -301,6 +304,8 @@ async def handle_landmarks(sid, data):
                     if current_time - last_predict_at >= PREDICT_INTERVAL_SEC:
                         prediction_scores = ml_predictor.predict()
                         _last_predict_at[sid] = current_time
+                        if prediction_scores is not None:
+                            _last_ml_predictions[sid] = prediction_scores
                     else:
                         prediction_scores = None
                     
@@ -357,6 +362,14 @@ async def handle_landmarks(sid, data):
         )
         
         # Send result
+        ml_prediction_out = None
+        with clients_lock:
+            cached_prediction = _last_ml_predictions.get(sid)
+        if prediction_scores is not None:
+            ml_prediction_out = prediction_scores.tolist()
+        elif cached_prediction is not None:
+            ml_prediction_out = cached_prediction.tolist()
+
         result = {
             "flag": int(flag),  # 0=none, 1=first_bite, 2=chewing
             "mouth_gap": float(mouth_gap),
@@ -364,7 +377,7 @@ async def handle_landmarks(sid, data):
             "face_state": int(face_state),
             "munching_count": int(chewing_detector.munching_count),
             "movement": float(movement) if movement is not None else None,
-            "ml_prediction": prediction_scores.tolist() if prediction_scores is not None else None,
+            "ml_prediction": ml_prediction_out,
         }
         with clients_lock:
             _last_results[sid] = result
