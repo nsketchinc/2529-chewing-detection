@@ -62,35 +62,32 @@ DEFAULT_FOCAL_LENGTH_Y = 1750.0
 FOCAL_LENGTH_Y = DEFAULT_FOCAL_LENGTH_Y
 
 # ML Prediction setup (matching main.py)
-USE_ML_PREDICTION = True
+try:
+    import os
 
-if USE_ML_PREDICTION:
-    try:
-        import os
-        
-        # Load ML models
-        MODEL_DIR = "data/tmp_model/exp001"
-        MODEL_NAMES = [
-            "lgb_0.model",
-            "lgb_1.model",
-            "lgb_2.model",
-            "lgb_3.model",
-            "lgb_4.model",
-        ]
-        
-        # Debug: Check if model files exist
-        logger.info(f"Checking model directory: {MODEL_DIR}")
-        if os.path.exists(MODEL_DIR):
-            files = os.listdir(MODEL_DIR)
-            logger.info(f"Files in {MODEL_DIR}: {files}")
-        else:
-            logger.error(f"Model directory does not exist: {MODEL_DIR}")
-            raise FileNotFoundError(f"Model directory not found: {MODEL_DIR}")
-        
-        logger.info(f"ML prediction enabled with {len(MODEL_NAMES)} models")
-    except Exception as e:
-        logger.error(f"Failed to load ML models: {e}", exc_info=True)
-        USE_ML_PREDICTION = False
+    # Load ML models
+    MODEL_DIR = "data/tmp_model/exp001"
+    MODEL_NAMES = [
+        "lgb_0.model",
+        "lgb_1.model",
+        "lgb_2.model",
+        "lgb_3.model",
+        "lgb_4.model",
+    ]
+
+    # Debug: Check if model files exist
+    logger.info(f"Checking model directory: {MODEL_DIR}")
+    if os.path.exists(MODEL_DIR):
+        files = os.listdir(MODEL_DIR)
+        logger.info(f"Files in {MODEL_DIR}: {files}")
+    else:
+        logger.error(f"Model directory does not exist: {MODEL_DIR}")
+        raise FileNotFoundError(f"Model directory not found: {MODEL_DIR}")
+
+    logger.info(f"ML prediction enabled with {len(MODEL_NAMES)} models")
+except Exception as e:
+    logger.error(f"Failed to load ML models: {e}", exc_info=True)
+    raise
 
 clients_lock = Lock()
 
@@ -162,18 +159,17 @@ def _init_client_state(sid: str) -> None:
     _last_results[sid] = {}
     _sid_locks[sid] = Lock()
     _last_ml_predictions[sid] = None
-    if USE_ML_PREDICTION:
-        _ml_predictors[sid] = load_predictor(
-            model_dir=MODEL_DIR,
-            model_names=MODEL_NAMES,
-            sequence_length=6,
-            num_lag=5,
-        )
-        _metric_converters[sid] = MetricLandmarkConverter(
-            frame_width=DEFAULT_FRAME_WIDTH,
-            frame_height=DEFAULT_FRAME_HEIGHT,
-            focal_length_y=FOCAL_LENGTH_Y,
-        )
+    _ml_predictors[sid] = load_predictor(
+        model_dir=MODEL_DIR,
+        model_names=MODEL_NAMES,
+        sequence_length=6,
+        num_lag=5,
+    )
+    _metric_converters[sid] = MetricLandmarkConverter(
+        frame_width=DEFAULT_FRAME_WIDTH,
+        frame_height=DEFAULT_FRAME_HEIGHT,
+        focal_length_y=FOCAL_LENGTH_Y,
+    )
 
 
 def _clear_client_state(sid: str) -> None:
@@ -215,7 +211,6 @@ async def connect(sid, environ):
         {
             "status": "connected",
             "message": "Connected to chewing detection server",
-            "ml_enabled": USE_ML_PREDICTION,
         },
         to=sid,
     )
@@ -275,7 +270,7 @@ async def handle_landmarks(sid, data):
         if (frame_width, frame_height) != _frame_sizes.get(sid, (frame_width, frame_height)):
             with clients_lock:
                 _frame_sizes[sid] = (frame_width, frame_height)
-                if USE_ML_PREDICTION and metric_converter is not None:
+                if metric_converter is not None:
                     metric_converter = MetricLandmarkConverter(
                         frame_width=frame_width,
                         frame_height=frame_height,
@@ -283,9 +278,9 @@ async def handle_landmarks(sid, data):
                     )
                     _metric_converters[sid] = metric_converter
         
-        # ML Prediction (if enabled)
+        # ML Prediction
         prediction_scores = None
-        if USE_ML_PREDICTION and ml_predictor is not None and metric_converter is not None:
+        if ml_predictor is not None and metric_converter is not None:
             try:
                 # Convert normalized landmarks to metric landmarks
                 metric_landmarks = metric_converter.convert(landmarks_normalized)
@@ -401,10 +396,10 @@ async def handle_reset(sid):
             with sid_lock:
                 if chewing_detector is not None:
                     chewing_detector.reset()
-                if USE_ML_PREDICTION and ml_predictor is not None:
+                if ml_predictor is not None:
                     ml_predictor.reset()
         await sio.emit("detection_result", {"status": "reset"}, to=sid)
-        logger.info("Detector reset (including ML predictor)" if USE_ML_PREDICTION else "Detector reset")
+        logger.info("Detector reset (including ML predictor)")
     except Exception as e:
         logger.error(f"Error resetting detector: {e}", exc_info=True)
         await sio.emit("detection_result", {"error": str(e)}, to=sid)
@@ -425,9 +420,8 @@ async def handle_get_state(sid):
                     "is_chewing": chewing_detector.is_chewing if chewing_detector else False,
                     "munching_count": int(chewing_detector.munching_count) if chewing_detector else 0,
                     "face_state": int(chewing_detector.face_state) if chewing_detector else 0,
-                    "ml_enabled": USE_ML_PREDICTION,
                     "ml_buffer_length": len(ml_predictor.data_buffer)
-                    if (USE_ML_PREDICTION and ml_predictor)
+                    if ml_predictor
                     else 0,
                 }
         else:
@@ -435,7 +429,6 @@ async def handle_get_state(sid):
                 "is_chewing": False,
                 "munching_count": 0,
                 "face_state": 0,
-                "ml_enabled": USE_ML_PREDICTION,
                 "ml_buffer_length": 0,
             }
         logger.debug("Current detector state: %s", state)
@@ -450,6 +443,6 @@ if __name__ == "__main__":
     import uvicorn
 
     logger.info("Starting ChewingDetection WebSocket Server on 0.0.0.0:5000")
-    logger.info(f"ML Prediction: {'ENABLED' if USE_ML_PREDICTION else 'DISABLED'}")
+    logger.info("ML Prediction: ENABLED")
     logger.info("Using ASGI async mode")
     uvicorn.run(app, host="0.0.0.0", port=5000, log_level="info")
