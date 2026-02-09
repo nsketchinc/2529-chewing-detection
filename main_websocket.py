@@ -55,6 +55,7 @@ chewing_detector = ChewingDetector(
     sequence_length=30,
     firstbite_threshold=0.1,
     mouth_gap_threshold=15.0,
+    min_face_size_threshold=250.0,
     non_continuous_sounds=5,
     face_direction_x_threshold=30.0,
     face_direction_y_threshold=(-20.0, 20.0),
@@ -247,11 +248,19 @@ async def handle_landmarks(sid, data):
             face_state,
             chewing_detector.munching_count,
         )
+
+        face_size = chewing_detector.last_face_size
+        face_size_out = (
+            float(face_size)
+            if (face_size is not None and np.isfinite(face_size))
+            else None
+        )
         
         # Send result
         result = {
             "flag": int(flag),  # 0=none, 1=first_bite, 2=chewing
             "mouth_gap": float(mouth_gap),
+            "face_size": face_size_out,
             "face_state": int(face_state),
             "munching_count": int(chewing_detector.munching_count),
             "ml_prediction": prediction_scores.tolist() if prediction_scores is not None else None,

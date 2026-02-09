@@ -75,6 +75,7 @@ class ChewingDetectionApp:
             sequence_length=30,
             firstbite_threshold=0.1,
             mouth_gap_threshold=15.0,
+            min_face_size_threshold=250.0,
         )
         self.face_direction_calc = FaceDirectionCalculator(
             frame_width=self.frame_width,
