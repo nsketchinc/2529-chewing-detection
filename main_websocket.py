@@ -50,30 +50,19 @@ async def health_app(scope, receive, send):
 
 app = socketio.ASGIApp(sio, other_asgi_app=health_app)
 
-# Global state
-chewing_detector = ChewingDetector(
-    sequence_length=30,
-    firstbite_threshold=0.26,
-    mouth_gap_threshold=15.0,
-    min_face_size_threshold=250.0,
-    non_continuous_sounds=5,
-    face_direction_x_threshold=30.0,
-    face_direction_y_threshold=(-20.0, 20.0),
-)
+# Limits and throttling
+MAX_CLIENTS = 3
+PREDICT_INTERVAL_SEC = 0.1
 
 # Frame defaults (used when client does not provide dimensions)
 DEFAULT_FRAME_WIDTH = 1920
 DEFAULT_FRAME_HEIGHT = 1080
 DEFAULT_FOCAL_LENGTH_Y = 1750.0
 
-FRAME_WIDTH = DEFAULT_FRAME_WIDTH
-FRAME_HEIGHT = DEFAULT_FRAME_HEIGHT
 FOCAL_LENGTH_Y = DEFAULT_FOCAL_LENGTH_Y
 
 # ML Prediction setup (matching main.py)
 USE_ML_PREDICTION = True
-ml_predictor = None
-metric_converter = None
 
 if USE_ML_PREDICTION:
     try:
@@ -98,31 +87,26 @@ if USE_ML_PREDICTION:
             logger.error(f"Model directory does not exist: {MODEL_DIR}")
             raise FileNotFoundError(f"Model directory not found: {MODEL_DIR}")
         
-        ml_predictor = load_predictor(
-            model_dir=MODEL_DIR,
-            model_names=MODEL_NAMES,
-            sequence_length=6,
-            num_lag=5,
-        )
-        
-        metric_converter = MetricLandmarkConverter(
-            frame_width=FRAME_WIDTH,
-            frame_height=FRAME_HEIGHT,
-            focal_length_y=FOCAL_LENGTH_Y,
-        )
-        
         logger.info(f"ML prediction enabled with {len(MODEL_NAMES)} models")
     except Exception as e:
         logger.error(f"Failed to load ML models: {e}", exc_info=True)
         USE_ML_PREDICTION = False
-        ml_predictor = None
-        metric_converter = None
 
-detector_lock = Lock()
+clients_lock = Lock()
 
 # Face movement gating to suppress chewing detection on large jumps.
 MAX_FACE_MOVE_RATIO = 0.8
 _last_face_centers = {}
+
+# Per-connection state
+_active_sids: set[str] = set()
+_chewing_detectors: dict[str, ChewingDetector] = {}
+_ml_predictors: dict[str, object] = {}
+_metric_converters: dict[str, MetricLandmarkConverter] = {}
+_frame_sizes: dict[str, tuple[int, int]] = {}
+_last_predict_at: dict[str, float] = {}
+_last_results: dict[str, dict] = {}
+_sid_locks: dict[str, Lock] = {}
 
 
 def _coerce_frame_size(value: object, fallback: int) -> int:
@@ -145,7 +129,7 @@ def _movement_and_suppression(
     center = _face_top_px(landmarks_px)
     threshold = MAX_FACE_MOVE_RATIO * float(min(frame_width, frame_height))
 
-    with detector_lock:
+    with clients_lock:
         previous = _last_face_centers.get(sid)
         _last_face_centers[sid] = center
 
@@ -158,11 +142,71 @@ def _movement_and_suppression(
     return movement, movement > threshold
 
 
+def _create_chewing_detector() -> ChewingDetector:
+    return ChewingDetector(
+        sequence_length=30,
+        firstbite_threshold=0.26,
+        mouth_gap_threshold=15.0,
+        min_face_size_threshold=250.0,
+        non_continuous_sounds=5,
+        face_direction_x_threshold=30.0,
+        face_direction_y_threshold=(-20.0, 20.0),
+    )
+
+
+def _init_client_state(sid: str) -> None:
+    _chewing_detectors[sid] = _create_chewing_detector()
+    _frame_sizes[sid] = (DEFAULT_FRAME_WIDTH, DEFAULT_FRAME_HEIGHT)
+    _last_predict_at[sid] = 0.0
+    _last_results[sid] = {}
+    _sid_locks[sid] = Lock()
+    if USE_ML_PREDICTION:
+        _ml_predictors[sid] = load_predictor(
+            model_dir=MODEL_DIR,
+            model_names=MODEL_NAMES,
+            sequence_length=6,
+            num_lag=5,
+        )
+        _metric_converters[sid] = MetricLandmarkConverter(
+            frame_width=DEFAULT_FRAME_WIDTH,
+            frame_height=DEFAULT_FRAME_HEIGHT,
+            focal_length_y=FOCAL_LENGTH_Y,
+        )
+
+
+def _clear_client_state(sid: str) -> None:
+    _active_sids.discard(sid)
+    _chewing_detectors.pop(sid, None)
+    _ml_predictors.pop(sid, None)
+    _metric_converters.pop(sid, None)
+    _frame_sizes.pop(sid, None)
+    _last_predict_at.pop(sid, None)
+    _last_results.pop(sid, None)
+    _sid_locks.pop(sid, None)
+    _last_face_centers.pop(sid, None)
+
+
 @sio.event
 async def connect(sid, environ):
     """Handle client connection."""
     logger.info("Client connected: %s", environ.get("REMOTE_ADDR"))
     logger.debug("Handshake headers: %s", environ.get("headers"))
+    with clients_lock:
+        if len(_active_sids) >= MAX_CLIENTS:
+            await sio.emit(
+                "response",
+                {
+                    "status": "rejected",
+                    "message": "Max clients exceeded",
+                    "max_clients": MAX_CLIENTS,
+                },
+                to=sid,
+            )
+            await sio.disconnect(sid)
+            return
+        _active_sids.add(sid)
+        _init_client_state(sid)
+
     await sio.emit(
         "response",
         {
@@ -178,8 +222,8 @@ async def connect(sid, environ):
 async def disconnect(sid):
     """Handle client disconnection."""
     logger.info("Client disconnected: %s", sid)
-    with detector_lock:
-        _last_face_centers.pop(sid, None)
+    with clients_lock:
+        _clear_client_state(sid)
 
 
 @sio.on("landmarks")
@@ -196,8 +240,6 @@ async def handle_landmarks(sid, data):
     }
     """
     try:
-        global FRAME_WIDTH, FRAME_HEIGHT, metric_converter
-
         # Parse landmarks
         landmarks_list = data.get("landmarks")
         if not landmarks_list:
@@ -213,17 +255,30 @@ async def handle_landmarks(sid, data):
         face_direction_y = data.get("face_direction_y", 0.0)
         logger.debug("Face direction: x=%s y=%s", face_direction_x, face_direction_y)
 
-        frame_width = _coerce_frame_size(data.get("frame_width"), FRAME_WIDTH)
-        frame_height = _coerce_frame_size(data.get("frame_height"), FRAME_HEIGHT)
-        if frame_width != FRAME_WIDTH or frame_height != FRAME_HEIGHT:
-            FRAME_WIDTH = frame_width
-            FRAME_HEIGHT = frame_height
-            if USE_ML_PREDICTION and metric_converter is not None:
-                metric_converter = MetricLandmarkConverter(
-                    frame_width=FRAME_WIDTH,
-                    frame_height=FRAME_HEIGHT,
-                    focal_length_y=FOCAL_LENGTH_Y,
-                )
+        with clients_lock:
+            if sid not in _active_sids:
+                await sio.emit("detection_result", {"error": "Unknown client"}, to=sid)
+                return
+            chewing_detector = _chewing_detectors[sid]
+            ml_predictor = _ml_predictors.get(sid)
+            metric_converter = _metric_converters.get(sid)
+            frame_width, frame_height = _frame_sizes.get(
+                sid, (DEFAULT_FRAME_WIDTH, DEFAULT_FRAME_HEIGHT)
+            )
+            sid_lock = _sid_locks[sid]
+
+        frame_width = _coerce_frame_size(data.get("frame_width"), frame_width)
+        frame_height = _coerce_frame_size(data.get("frame_height"), frame_height)
+        if (frame_width, frame_height) != _frame_sizes.get(sid, (frame_width, frame_height)):
+            with clients_lock:
+                _frame_sizes[sid] = (frame_width, frame_height)
+                if USE_ML_PREDICTION and metric_converter is not None:
+                    metric_converter = MetricLandmarkConverter(
+                        frame_width=frame_width,
+                        frame_height=frame_height,
+                        focal_length_y=FOCAL_LENGTH_Y,
+                    )
+                    _metric_converters[sid] = metric_converter
         
         # ML Prediction (if enabled)
         prediction_scores = None
@@ -231,19 +286,23 @@ async def handle_landmarks(sid, data):
             try:
                 # Convert normalized landmarks to metric landmarks
                 metric_landmarks = metric_converter.convert(landmarks_normalized)
-                
+
                 # Append data to predictor buffer
                 current_time = time.time()
-                with detector_lock:
+                with sid_lock:
                     ml_predictor.append_data(
                         metric_landmarks=metric_landmarks,
                         timestamp=current_time,
                         face_direction_x=face_direction_x,
                         face_direction_y=face_direction_y,
                     )
-                    
-                    # Get prediction
-                    prediction_scores = ml_predictor.predict()
+
+                    last_predict_at = _last_predict_at.get(sid, 0.0)
+                    if current_time - last_predict_at >= PREDICT_INTERVAL_SEC:
+                        prediction_scores = ml_predictor.predict()
+                        _last_predict_at[sid] = current_time
+                    else:
+                        prediction_scores = None
                     
                 if prediction_scores is not None:
                     logger.debug(
@@ -261,21 +320,21 @@ async def handle_landmarks(sid, data):
         # Convert normalized landmarks to pixel coordinates for chewing detector
         # (Using client frame dimensions when provided)
         landmarks_px = landmarks_normalized.copy()
-        landmarks_px[0] *= FRAME_WIDTH
-        landmarks_px[1] *= FRAME_HEIGHT
+        landmarks_px[0] *= frame_width
+        landmarks_px[1] *= frame_height
 
         movement, suppress_chewing = _movement_and_suppression(
-            sid, landmarks_px, FRAME_WIDTH, FRAME_HEIGHT
+            sid, landmarks_px, frame_width, frame_height
         )
         
         # Perform detection
         if suppress_chewing:
-            with detector_lock:
+            with sid_lock:
                 flag = 0
                 mouth_gap = 0.0
                 face_state = chewing_detector.face_state
         else:
-            with detector_lock:
+            with sid_lock:
                 flag, mouth_gap, face_state = chewing_detector.detect_chewing(
                     landmarks_px=landmarks_px,
                     face_direction_x=face_direction_x,
@@ -307,6 +366,8 @@ async def handle_landmarks(sid, data):
             "movement": float(movement) if movement is not None else None,
             "ml_prediction": prediction_scores.tolist() if prediction_scores is not None else None,
         }
+        with clients_lock:
+            _last_results[sid] = result
         await sio.emit("detection_result", result, to=sid)
         
     except Exception as e:
@@ -319,10 +380,16 @@ async def handle_reset(sid):
     """Reset detector state."""
     try:
         logger.info("Reset requested by client.")
-        with detector_lock:
-            chewing_detector.reset()
-            if USE_ML_PREDICTION and ml_predictor is not None:
-                ml_predictor.reset()
+        with clients_lock:
+            chewing_detector = _chewing_detectors.get(sid)
+            ml_predictor = _ml_predictors.get(sid)
+            sid_lock = _sid_locks.get(sid)
+        if sid_lock:
+            with sid_lock:
+                if chewing_detector is not None:
+                    chewing_detector.reset()
+                if USE_ML_PREDICTION and ml_predictor is not None:
+                    ml_predictor.reset()
         await sio.emit("detection_result", {"status": "reset"}, to=sid)
         logger.info("Detector reset (including ML predictor)" if USE_ML_PREDICTION else "Detector reset")
     except Exception as e:
@@ -335,13 +402,28 @@ async def handle_get_state(sid):
     """Get current detector state."""
     try:
         logger.debug("State requested by client.")
-        with detector_lock:
+        with clients_lock:
+            chewing_detector = _chewing_detectors.get(sid)
+            ml_predictor = _ml_predictors.get(sid)
+            sid_lock = _sid_locks.get(sid)
+        if sid_lock:
+            with sid_lock:
+                state = {
+                    "is_chewing": chewing_detector.is_chewing if chewing_detector else False,
+                    "munching_count": int(chewing_detector.munching_count) if chewing_detector else 0,
+                    "face_state": int(chewing_detector.face_state) if chewing_detector else 0,
+                    "ml_enabled": USE_ML_PREDICTION,
+                    "ml_buffer_length": len(ml_predictor.data_buffer)
+                    if (USE_ML_PREDICTION and ml_predictor)
+                    else 0,
+                }
+        else:
             state = {
-                "is_chewing": chewing_detector.is_chewing,
-                "munching_count": int(chewing_detector.munching_count),
-                "face_state": int(chewing_detector.face_state),
+                "is_chewing": False,
+                "munching_count": 0,
+                "face_state": 0,
                 "ml_enabled": USE_ML_PREDICTION,
-                "ml_buffer_length": len(ml_predictor.data_buffer) if (USE_ML_PREDICTION and ml_predictor) else 0,
+                "ml_buffer_length": 0,
             }
         logger.debug("Current detector state: %s", state)
         await sio.emit("detector_state", state, to=sid)
