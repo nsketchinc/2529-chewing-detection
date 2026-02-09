@@ -53,7 +53,7 @@ app = socketio.ASGIApp(sio, other_asgi_app=health_app)
 # Global state
 chewing_detector = ChewingDetector(
     sequence_length=30,
-    firstbite_threshold=0.1,
+    firstbite_threshold=0.26,
     mouth_gap_threshold=15.0,
     min_face_size_threshold=250.0,
     non_continuous_sounds=5,
@@ -120,6 +120,10 @@ if USE_ML_PREDICTION:
 
 detector_lock = Lock()
 
+# Face movement gating to suppress chewing detection on large jumps.
+MAX_FACE_MOVE_RATIO = 0.8
+_last_face_centers = {}
+
 
 def _coerce_frame_size(value: object, fallback: int) -> int:
     try:
@@ -127,6 +131,31 @@ def _coerce_frame_size(value: object, fallback: int) -> int:
     except (TypeError, ValueError):
         return fallback
     return size if size > 0 else fallback
+
+
+def _face_top_px(landmarks_px: np.ndarray) -> tuple[float, float]:
+    y_values = landmarks_px[1]
+    top_index = int(np.argmin(y_values))
+    return (float(landmarks_px[0, top_index]), float(y_values[top_index]))
+
+
+def _movement_and_suppression(
+    sid: str, landmarks_px: np.ndarray, frame_width: int, frame_height: int
+) -> tuple[float | None, bool]:
+    center = _face_top_px(landmarks_px)
+    threshold = MAX_FACE_MOVE_RATIO * float(min(frame_width, frame_height))
+
+    with detector_lock:
+        previous = _last_face_centers.get(sid)
+        _last_face_centers[sid] = center
+
+    if previous is None:
+        return None, False
+
+    dx = center[0] - previous[0]
+    dy = center[1] - previous[1]
+    movement = (dx * dx + dy * dy) ** 0.5
+    return movement, movement > threshold
 
 
 @sio.event
@@ -149,6 +178,8 @@ async def connect(sid, environ):
 async def disconnect(sid):
     """Handle client disconnection."""
     logger.info("Client disconnected: %s", sid)
+    with detector_lock:
+        _last_face_centers.pop(sid, None)
 
 
 @sio.on("landmarks")
@@ -232,15 +263,25 @@ async def handle_landmarks(sid, data):
         landmarks_px = landmarks_normalized.copy()
         landmarks_px[0] *= FRAME_WIDTH
         landmarks_px[1] *= FRAME_HEIGHT
+
+        movement, suppress_chewing = _movement_and_suppression(
+            sid, landmarks_px, FRAME_WIDTH, FRAME_HEIGHT
+        )
         
         # Perform detection
-        with detector_lock:
-            flag, mouth_gap, face_state = chewing_detector.detect_chewing(
-                landmarks_px=landmarks_px,
-                face_direction_x=face_direction_x,
-                face_direction_y=face_direction_y,
-                prediction_scores=prediction_scores,
-            )
+        if suppress_chewing:
+            with detector_lock:
+                flag = 0
+                mouth_gap = 0.0
+                face_state = chewing_detector.face_state
+        else:
+            with detector_lock:
+                flag, mouth_gap, face_state = chewing_detector.detect_chewing(
+                    landmarks_px=landmarks_px,
+                    face_direction_x=face_direction_x,
+                    face_direction_y=face_direction_y,
+                    prediction_scores=prediction_scores,
+                )
         logger.debug(
             "Detection result raw: flag=%s mouth_gap=%s face_state=%s munching_count=%s",
             flag,
@@ -263,6 +304,7 @@ async def handle_landmarks(sid, data):
             "face_size": face_size_out,
             "face_state": int(face_state),
             "munching_count": int(chewing_detector.munching_count),
+            "movement": float(movement) if movement is not None else None,
             "ml_prediction": prediction_scores.tolist() if prediction_scores is not None else None,
         }
         await sio.emit("detection_result", result, to=sid)
