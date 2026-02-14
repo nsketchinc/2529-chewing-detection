@@ -194,21 +194,27 @@ async def connect(sid, environ):
     """Handle client connection."""
     logger.info("Client connected: %s", environ.get("REMOTE_ADDR"))
     logger.debug("Handshake headers: %s", environ.get("headers"))
+    should_reject = False
     with clients_lock:
         if len(_active_sids) >= MAX_CLIENTS:
-            await sio.emit(
-                "response",
-                {
-                    "status": "rejected",
-                    "message": "Max clients exceeded",
-                    "max_clients": MAX_CLIENTS,
-                },
-                to=sid,
-            )
-            await sio.disconnect(sid)
-            return
-        _active_sids.add(sid)
-        _init_client_state(sid)
+            should_reject = True
+        else:
+            _active_sids.add(sid)
+            _init_client_state(sid)
+
+    if should_reject:
+        logger.warning("Max clients (%d) exceeded, rejecting client: %s", MAX_CLIENTS, sid)
+        await sio.emit(
+            "response",
+            {
+                "status": "rejected",
+                "message": "Max clients exceeded",
+                "max_clients": MAX_CLIENTS,
+            },
+            to=sid,
+        )
+        await sio.disconnect(sid)
+        return
 
     await sio.emit(
         "response",
