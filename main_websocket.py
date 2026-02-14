@@ -389,6 +389,28 @@ async def handle_landmarks(sid, data):
         await sio.emit("detection_result", {"error": str(e)}, to=sid)
 
 
+@sio.on("update_threshold")
+async def handle_update_threshold(sid, data):
+    """Update chewing detection thresholds from client."""
+    try:
+        with clients_lock:
+            chewing_detector = _chewing_detectors.get(sid)
+            sid_lock = _sid_locks.get(sid)
+        if sid_lock and chewing_detector is not None:
+            firstbite_threshold = data.get("firstbite_threshold")
+            if firstbite_threshold is not None:
+                firstbite_threshold = float(firstbite_threshold)
+                with sid_lock:
+                    chewing_detector.firstbite_threshold = firstbite_threshold
+                logger.info(
+                    "Updated firstbite_threshold=%.3f for client %s",
+                    firstbite_threshold,
+                    sid,
+                )
+    except Exception as e:
+        logger.error(f"Error updating threshold: {e}", exc_info=True)
+
+
 @sio.on("reset")
 async def handle_reset(sid):
     """Reset detector state."""
